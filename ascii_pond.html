@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pond</title>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{
+  width:100%;height:100%;
+  background:#ffffff;
+  display:flex;align-items:center;justify-content:center;
+  overflow:hidden;
+}
+#frame{
+  position:relative;
+  background:#ffffff;
+  width:min(92vw,184vh);
+  aspect-ratio:2/1;
+  overflow:hidden;
+  border-radius:24px;
+  border:1.5px solid #466696;
+}
+#frame::after{
+  content:'';position:absolute;inset:0;pointer-events:none;z-index:999;
+  border-radius:24px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='250' height='250'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='250' height='250' filter='url(%23g)' opacity='1'/%3E%3C/svg%3E");
+  background-size:220px 220px;opacity:.065;mix-blend-mode:multiply;
+}
+#sun{position:absolute;inset:0;width:100%;height:100%;z-index:3;pointer-events:none;}
+#mc {position:absolute;inset:0;width:100%;height:100%;z-index:5;pointer-events:none;}
+#scene{
+  position:absolute;bottom:0;left:0;width:100%;
+  font-family:'Courier New',Courier,monospace;
+  font-size:clamp(7px,1.8vw,16px);
+  line-height:1.25;
+  color:#466696;
+  white-space:pre;
+  pointer-events:none;
+  z-index:10;
+  user-select:none;
+  letter-spacing:0;
+}
+#el{position:absolute;inset:0;z-index:20;cursor:default;}
+</style>
+</head>
+<body>
+<div id="frame">
+  <canvas id="sun"></canvas>
+  <canvas id="mc"></canvas>
+  <pre id="scene"></pre>
+  <div id="el"></div>
+</div>
+<script>
+const frameEl = document.getElementById('frame');
+const sunCvs  = document.getElementById('sun');
+const sunCtx  = sunCvs.getContext('2d');
+const canvas  = document.getElementById('mc');
+const ctx     = canvas.getContext('2d');
+const sceneEl = document.getElementById('scene');
+const elDiv   = document.getElementById('el');
+
+let FW, FH;
+function resize(){
+  const r = frameEl.getBoundingClientRect();
+  FW = Math.round(r.width);
+  FH = Math.round(r.height);
+  canvas.width  = sunCvs.width  = FW;
+  canvas.height = sunCvs.height = FH;
+}
+resize();
+window.addEventListener('resize', ()=>{ resize(); initSwarm(); buildScene(); });
+
+// ─── NOISE TEXTURE ────────────────────────────────────────────────────────────
+const NOISE_SIZE = 256;
+const noiseCvs = document.createElement('canvas');
+noiseCvs.width = noiseCvs.height = NOISE_SIZE;
+const nCtx = noiseCvs.getContext('2d');
+const nId  = nCtx.createImageData(NOISE_SIZE, NOISE_SIZE);
+for(let i=0;i<nId.data.length;i+=4){
+  const v=Math.random()*255|0;
+  nId.data[i]=nId.data[i+1]=nId.data[i+2]=v;
+  nId.data[i+3]=255;
+}
+nCtx.putImageData(nId,0,0);
+
+// ─── SUNLIGHT ─────────────────────────────────────────────────────────────────
+function drawSunlight(){
+  sunCtx.clearRect(0,0,FW,FH);
+  const tipX     = FW * 0.88;
+  const tipY     = 0;
+  const topHalfW = FW * 0.04;
+  const tx1 = tipX - topHalfW, tx2 = tipX + topHalfW;
+  const botY    = FH;
+  const botCX   = FW * 0.48;
+  const botHalfW= FW * 0.30;
+  const bx1 = botCX - botHalfW, bx2 = botCX + botHalfW;
+
+  sunCtx.save();
+  sunCtx.beginPath();
+  sunCtx.moveTo(tx1,tipY); sunCtx.lineTo(tx2,tipY);
+  sunCtx.lineTo(bx2,botY); sunCtx.lineTo(bx1,botY);
+  sunCtx.closePath();
+  const grad = sunCtx.createLinearGradient(tipX,tipY,botCX,botY);
+  grad.addColorStop(0,   'rgba(160,178,205,0.0)');
+  grad.addColorStop(0.05,'rgba(160,178,205,0.12)');
+  grad.addColorStop(0.4, 'rgba(155,175,202,0.09)');
+  grad.addColorStop(0.8, 'rgba(150,170,198,0.06)');
+  grad.addColorStop(1.0, 'rgba(145,165,195,0.0)');
+  sunCtx.fillStyle = grad;
+  sunCtx.fill();
+  sunCtx.restore();
+
+  sunCtx.save();
+  sunCtx.beginPath();
+  sunCtx.moveTo(tx1,tipY); sunCtx.lineTo(tx2,tipY);
+  sunCtx.lineTo(bx2,botY); sunCtx.lineTo(bx1,botY);
+  sunCtx.closePath();
+  sunCtx.clip();
+  sunCtx.globalAlpha = 0.07;
+  sunCtx.globalCompositeOperation = 'multiply';
+  const pat = sunCtx.createPattern(noiseCvs,'repeat');
+  sunCtx.fillStyle = pat;
+  sunCtx.fillRect(0,0,FW,FH);
+  sunCtx.restore();
+}
+
+function sunBeamCentreAtY(y){
+  const t = Math.min(1,Math.max(0,y/FH));
+  return FW*0.88 + (FW*0.48 - FW*0.88)*t;
+}
+
+// ─── DUCK ─────────────────────────────────────────────────────────────────────
+function duckLines(facingLeft, open){
+  if(facingLeft) return { top:(open?'>':'=')+'(.)__', bot:' (__/ ' };
+  else           return { top:'__(.)' +(open?'<':'='), bot:' \\__) ' };
+}
+const TURN_L = 29, TURN_R = 88;
+const CHIRP_PERIOD = 140, CHIRP_OPEN = 7;
+const ducks = [
+  { x:44, speed:0.038, facingLeft:false, chirpTimer:0  },
+  { x:60, speed:0.026, facingLeft:true,  chirpTimer:50 },
+  { x:75, speed:0.048, facingLeft:false, chirpTimer:98 },
+];
+
+// ─── CATTAILS ─────────────────────────────────────────────────────────────────
+// Logical column positions for each stalk's @@ and || chars.
+// CRITICAL: \||/ is placed at Math.round(X*sx) - 1  (subtract 1 AFTER scaling)
+// This ensures the || is always the inner two chars of \||/ regardless of scale.
+//
+// Left stalk:  CA = 22  → @@/|| at col round(22*sx), \||/ at round(22*sx)-1
+// Right stalk: CB = 26  → @@/|| at col round(26*sx), \||/ at round(26*sx)-1
+//
+// Scene rows (index 0 = topmost, index 7 = waterline):
+//  0: L:@@  R:—
+//  1: L:@@  R:@@
+//  2: L:@@  R:@@
+//  3: L:||  R:@@
+//  4: L:||  R:||
+//  5: L:||  R:||
+//  6: L:\||/ R:\||/   ← both bases same row; + duck tops
+//  7: ~~~~             ← waterline; + duck bottoms
+
+const CA = 22, CB = 26;
+
+const SCENE_ROWS = [
+  { l:'@@',    r:null,    duckTop:false, wl:false },
+  { l:'@@',    r:'@@',    duckTop:false, wl:false },
+  { l:'@@',    r:'@@',    duckTop:false, wl:false },
+  { l:'||',    r:'@@',    duckTop:false, wl:false },
+  { l:'||',    r:'||',    duckTop:false, wl:false },
+  { l:'||',    r:'||',    duckTop:false, wl:false },
+  { l:'\\||/', r:'\\||/', duckTop:true,  wl:false },
+  { l:null,    r:null,    duckTop:false, wl:true  },
+];
+
+// ─── SCENE BUILD ──────────────────────────────────────────────────────────────
+let charW = 0;
+function measureChar(){
+  const t=document.createElement('span');
+  t.style.cssText='font-family:"Courier New",monospace;font-size:'
+    +getComputedStyle(sceneEl).fontSize+';position:fixed;visibility:hidden;white-space:pre';
+  t.textContent='M';
+  document.body.appendChild(t);
+  charW=t.getBoundingClientRect().width||8;
+  document.body.removeChild(t);
+}
+
+function write(buf,col,str){
+  for(let i=0;i<str.length;i++){
+    const c=col+i;
+    if(c>=0&&c<buf.length&&str[i]!==' ') buf[c]=str[i];
+  }
+}
+
+function buildScene(){
+  if(!charW) measureChar();
+  const cols=Math.max(50,Math.floor(FW/charW));
+  const sx=cols/100;
+
+  // Compute stalk column anchors once — these are the col positions for @@ and ||
+  // \||/ always goes at anchor-1 so its inner two chars sit directly under ||
+  const colL = Math.round(CA*sx);  // left stalk anchor
+  const colR = Math.round(CB*sx);  // right stalk anchor
+
+  const lines=[];
+  for(const row of SCENE_ROWS){
+    const buf=Array(cols).fill(' ');
+
+    if(row.wl){
+      for(let i=0;i<cols;i++) buf[i]='~';
+      for(const d of ducks){
+        const {bot}=duckLines(d.facingLeft, d.chirpTimer<CHIRP_OPEN);
+        write(buf, Math.round(d.x*sx), bot);
+      }
+    } else {
+      // Left stalk
+      if(row.l){
+        const col = row.l==='\\||/' ? colL-1 : colL;
+        write(buf, col, row.l);
+      }
+      // Right stalk
+      if(row.r){
+        const col = row.r==='\\||/' ? colR-1 : colR;
+        write(buf, col, row.r);
+      }
+      // Duck tops
+      if(row.duckTop){
+        for(const d of ducks){
+          const {top}=duckLines(d.facingLeft, d.chirpTimer<CHIRP_OPEN);
+          write(buf, Math.round(d.x*sx), top);
+        }
+      }
+    }
+    lines.push(buf.join(''));
+  }
+  sceneEl.textContent=lines.join('\n');
+}
+
+// ─── MIDGES ───────────────────────────────────────────────────────────────────
+const RAW=[
+  [467,198],[485,213],[525,170],[481,177],[517,198],[560,201],[564,248],
+  [529,210],[560,170],[616,151],[501,133],[406,177],[452,182],[444,222],
+  [386,244],[485,240],[533,248],[621,203],[584,133],[542,114],[534,187],
+  [503,183],[503,233],[525,230],[514,227],[501,216],[560,220],[596,197],
+  [533,155],[452,126],[475,277],[525,263],[546,281],[600,257],[621,294],
+  [572,285],[501,307],[592,175],[546,191],[542,222],[513,214],[501,199],
+  [493,163],
+];
+const N=RAW.length;
+function mx(rx){return (rx/781)*FW;}
+function my(ry){return (ry/555)*FH*0.52;}
+function initMidges(){
+  const mp=RAW.map(([x,y])=>({x:mx(x),y:my(y)}));
+  const cx=mp.reduce((s,p)=>s+p.x,0)/N;
+  const cy=mp.reduce((s,p)=>s+p.y,0)/N;
+  return mp.map(p=>({
+    x:cx+(p.x-cx)*1.45, y:cy+(p.y-cy)*1.45,
+    vx:0,vy:0,
+    wobble:Math.random()*Math.PI*2,
+    wobbleSpeed:0.016+Math.random()*0.020,
+    opacity:0.58+Math.random()*0.42,
+  }));
+}
+let midges=initMidges();
+let swarmCx,swarmCy;
+function computeCoM(){
+  swarmCx=midges.reduce((s,m)=>s+m.x,0)/N;
+  swarmCy=midges.reduce((s,m)=>s+m.y,0)/N;
+}
+function getHome(){
+  const mp=RAW.map(([x,y])=>[mx(x),my(y)]);
+  return{x:mp.reduce((s,p)=>s+p[0],0)/N,y:mp.reduce((s,p)=>s+p[1],0)/N};
+}
+function initSwarm(){midges=initMidges();computeCoM();}
+initSwarm();
+
+let driftA=0,driftT=0,driftC=200;
+const mouse={x:-9999,y:-9999,active:false};
+elDiv.addEventListener('mousemove',e=>{
+  const r=frameEl.getBoundingClientRect();
+  mouse.x=e.clientX-r.left; mouse.y=e.clientY-r.top; mouse.active=true;
+});
+elDiv.addEventListener('mouseleave',()=>{mouse.active=false;});
+
+// ─── LOOP ─────────────────────────────────────────────────────────────────────
+let frameN=0,windT=0;
+function tick(){
+  frameN++;windT+=0.018;
+
+  for(const d of ducks){
+    d.x+=d.facingLeft?-d.speed:d.speed;
+    d.chirpTimer=(d.chirpTimer+1)%CHIRP_PERIOD;
+    if(d.facingLeft&&d.x<=TURN_L) d.facingLeft=false;
+    if(!d.facingLeft&&d.x>=TURN_R) d.facingLeft=true;
+  }
+
+  computeCoM();
+  const sunTargetX=sunBeamCentreAtY(swarmCy);
+  const home=getHome();
+
+  if(++driftT>driftC){
+    driftT=0;driftC=100+Math.random()*160;
+    driftA=(Math.random()-0.5)*Math.PI*0.85;
+  }
+  swarmCx+=(sunTargetX-swarmCx)*0.005+Math.cos(driftA)*0.14;
+  swarmCy+=(home.y-swarmCy)*0.006+Math.sin(driftA)*0.05;
+  swarmCx=Math.max(FW*0.15,Math.min(FW*0.96,swarmCx));
+  swarmCy=Math.max(FH*0.04,Math.min(FH*0.54,swarmCy));
+
+  const HD=Math.min(FW,FH)*0.030;
+  const RR=Math.min(FW,FH)*0.11;
+  const affected=new Set();
+  if(mouse.active){
+    for(let i=0;i<N;i++){
+      const m=midges[i];
+      const dx=m.x-mouse.x,dy=m.y-mouse.y;
+      if(dx*dx+dy*dy<HD*HD){
+        for(let j=0;j<N;j++){
+          const n=midges[j];
+          const ex=n.x-m.x,ey=n.y-m.y;
+          if(ex*ex+ey*ey<RR*RR) affected.add(j);
+        }
+      }
+    }
+  }
+
+  const EASE=0.016,JIT=0.44,DAMP=0.85,MSPD=5.0;
+  const lineH=parseFloat(getComputedStyle(sceneEl).fontSize)*1.25;
+  const maxMY=FH-8*lineH-lineH*0.8;
+
+  for(let i=0;i<N;i++){
+    const m=midges[i];
+    m.wobble+=m.wobbleSpeed;
+    if(affected.has(i)){
+      const dx=m.x-mouse.x,dy=m.y-mouse.y;
+      const d=Math.sqrt(dx*dx+dy*dy)||1;
+      const f=Math.max(0,(RR*1.5-d))/(RR*1.5);
+      m.vx+=(dx/d)*f*3.5;m.vy+=(dy/d)*f*3.5;
+    } else {
+      const dx=swarmCx-m.x,dy=swarmCy-m.y;
+      const d=Math.sqrt(dx*dx+dy*dy)||1;
+      const pull=EASE*(1+d/50);
+      m.vx+=(dx/d)*pull*Math.min(d/34,3);
+      m.vy+=(dy/d)*pull*Math.min(d/34,3);
+    }
+    m.vx+=Math.sin(windT+m.wobble)*0.04+Math.sin(m.wobble*1.3)*0.03+(Math.random()-0.5)*JIT;
+    m.vy+=Math.cos(m.wobble*1.1)*0.03+(Math.random()-0.5)*JIT;
+    m.vx*=DAMP;m.vy*=DAMP;
+    const spd=Math.sqrt(m.vx*m.vx+m.vy*m.vy);
+    if(spd>MSPD){m.vx=(m.vx/spd)*MSPD;m.vy=(m.vy/spd)*MSPD;}
+    m.x+=m.vx;m.y+=m.vy;
+    if(m.x<8)     m.vx+=0.9;
+    if(m.x>FW-8)  m.vx-=0.9;
+    if(m.y<8)     m.vy+=0.9;
+    if(m.y>maxMY) m.vy-=1.5;
+  }
+  computeCoM();
+
+  drawSunlight();
+
+  ctx.clearRect(0,0,FW,FH);
+  const fs=getComputedStyle(sceneEl).fontSize;
+  ctx.font=fs+' "Courier New",monospace';
+  ctx.textBaseline='middle';ctx.textAlign='center';
+  for(let i=0;i<N;i++){
+    const m=midges[i];
+    const aff=affected.has(i);
+    ctx.globalAlpha=m.opacity*(aff?1.0:0.78);
+    ctx.fillStyle=aff?'#5a7ec8':'#466696';
+    ctx.fillText('+',m.x,m.y);
+  }
+  ctx.globalAlpha=1;
+
+  if(frameN%3===0) buildScene();
+  requestAnimationFrame(tick);
+}
+
+measureChar();
+buildScene();
+tick();
+</script>
+</body>
+</html>
